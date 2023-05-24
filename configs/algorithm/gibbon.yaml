@@ -1,0 +1,5 @@
+name: GIBBON
+acq_func: GIBBON
+init_type: sobol
+acq_kwargs:
+  num_optima: 8

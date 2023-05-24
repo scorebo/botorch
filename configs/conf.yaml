@@ -1,0 +1,11 @@
+
+seed: 42
+defaults:
+  - model: bo_lognormal
+  - acq_opt: sample_best_max_100
+  - algorithm: scorebo_j_hr
+  - benchmark: branin
+  - _self_
+experiment_group: test
+experiment_name: ${benchmark.name}_${algorithm.name}_run_${seed}
+result_path: ./../../../results/${experiment_group}/${benchmark.name}/${algorithm.name}

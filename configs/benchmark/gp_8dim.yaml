@@ -1,0 +1,12 @@
+name: gp_8dim
+benchmark: gp_8dim
+num_iters: 160
+num_init: 9
+parameters: null
+bounds: [[0, 1], [0, 1], [0, 1], [0, 1], [0, 1], [0, 1], [0, 1], [0, 1]] 
+noise_std: 0.31
+outputscale: 1
+prior_location: [0.0, 0., 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+model_parameters:
+  lengthscale: [0.1, 0.31, 0.31, 1, 1, 100, 100, 100]
+  outputscale: [1] 

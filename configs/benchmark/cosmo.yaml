@@ -1,0 +1,11 @@
+name: cosmo
+benchmark: cosmo
+num_iters: 200
+num_init: 3
+parameters: null
+bounds: [[0.01, 0.08], [0.01, 0.25], [0.01, 0.25], [52.5, 100], [2.7, 2.8], [0.2, 0.3], [2.9, 3.09], [1.5e-9, 2.6e-8], [0.72, 2.7], [0, 100], [0, 100]]
+prior_location: [1, 1]
+noise_std: 0.0
+model_parameters:
+  lengthscale: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+  outputscale: [1]

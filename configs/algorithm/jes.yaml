@@ -1,0 +1,7 @@
+name: JES-e-LB2
+acq_func: JES-e
+init_type: sobol
+acq_kwargs:
+  estimation_type: LB
+  exploit_fraction: 0.1
+  num_optima: 8

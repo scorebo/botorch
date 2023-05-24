@@ -1,0 +1,6 @@
+name: SAL_HR
+acq_func: SAL
+use_prior: False
+init_type: sobol
+acq_kwargs:
+  distance_metric: 'HR'

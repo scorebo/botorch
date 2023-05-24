@@ -1,0 +1,8 @@
+gp: Modular
+prior_name: ScoreBO_add
+num_samples: 96
+warmup: 32
+thinning: 8
+warm_start: 1
+model_kwargs:
+  Null

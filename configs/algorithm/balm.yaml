@@ -1,0 +1,4 @@
+name: BALM
+acq_func: BALM
+use_prior: False
+init_type: sobol

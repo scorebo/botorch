@@ -1,0 +1,8 @@
+name: higdon
+benchmark: higdon
+num_iters: 50
+num_init: 2
+parameters: null
+bounds: [[0.0, 20.0]]
+prior_location: [1]
+noise_std: 0.1

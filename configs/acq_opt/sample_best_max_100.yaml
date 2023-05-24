@@ -1,0 +1,8 @@
+raw_samples: 1024
+num_restarts: 20
+options:
+  nonnegative: false
+  sample_around_best: true 
+  sample_around_best_sigma: 0.1  
+  maxiter: 200
+  batch_limit: 128

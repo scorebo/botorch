@@ -1,0 +1,9 @@
+name: branin
+benchmark: branin
+num_iters: 100
+num_init: 3
+parameters: null
+bounds: [[-5, 10], [0, 15]]
+prior_location: [3.1415278, 2.275]
+noise_std: 0.5
+range: 308

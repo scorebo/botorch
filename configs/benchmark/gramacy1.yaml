@@ -1,0 +1,8 @@
+name: gramacy1
+benchmark: gramacy1
+num_iters: 50
+num_init: 2
+parameters: null
+bounds: [[0.5, 2.5]]
+prior_location: [1]
+noise_std: 0.1

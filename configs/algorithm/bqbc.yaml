@@ -1,0 +1,4 @@
+name: BQBC
+acq_func: BQBC
+use_prior: False
+init_type: sobol

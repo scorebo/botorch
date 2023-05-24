@@ -1,0 +1,4 @@
+name: QBMGP
+acq_func: QBMGP
+use_prior: False
+init_type: sobol

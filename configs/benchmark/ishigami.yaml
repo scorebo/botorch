@@ -1,0 +1,8 @@
+name: ishigami
+benchmark: ishigami
+num_iters: 150
+num_init: 4
+parameters: null
+bounds: [[-3.141527, 3.141527], [-3.141527, 3.141527], [-3.141527, 3.141527]]
+prior_location: [1, 1, 1]
+noise_std: 0.187

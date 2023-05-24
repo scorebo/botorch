@@ -1,0 +1,9 @@
+name: hartmann3
+benchmark: hartmann3
+num_iters: 125
+num_init: 4
+parameters: [null]
+bounds: [[0, 1], [0, 1], [0, 1]]
+prior_location: [0.114614, 0.555649, 0.852547]
+noise_std: 0.5
+range: 3.86

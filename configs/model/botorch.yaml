@@ -1,0 +1,7 @@
+gp: Modular
+prior_name: SCoreBO_nuts_mean
+num_samples: 256
+warmup: 128
+thinning: 16
+model_kwargs:
+  Null

@@ -1,0 +1,6 @@
+name: ScoreBO_J_WS
+acq_func: ScoreBO_J
+init_type: sobol
+acq_kwargs:
+  num_optima: 8
+  distance_metric: WS

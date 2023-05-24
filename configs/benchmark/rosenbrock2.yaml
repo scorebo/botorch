@@ -1,0 +1,9 @@
+name: rosenbrock2
+benchmark: rosenbrock2
+num_iters: 100
+num_init: 3
+parameters: null
+bounds: [[-1.5, 1.5], [-1.5, 1.5]]
+prior_location: [1, 1]
+noise_std: 2.5
+range: 3906
