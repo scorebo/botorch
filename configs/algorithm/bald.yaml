@@ -1,0 +1,4 @@
+name: BALD
+acq_func: BALD
+use_prior: False
+init_type: sobol

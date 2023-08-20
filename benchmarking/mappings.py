@@ -47,6 +47,7 @@ from botorch.acquisition.active_learning import (
     StatisticalDistance,
     QBMGP,
     BALM,
+    BALD,
     BQBC,
 )
 
@@ -159,7 +160,7 @@ ACQUISITION_FUNCTIONS = {
     'ScoreBO_J': JointSelfCorrecting,
     'PES': qPredictiveEntropySearch,
     'SAL': StatisticalDistance,
-    'BALM': BALM,
+    'BALD': BALD,
     'QBMGP': QBMGP,
     'BALM': BALM,
     'BQBC': BQBC,

@@ -880,8 +880,8 @@ def optimize_posterior_samples(
     paths: SamplePath,
     bounds: Tensor,
     candidates: Optional[Tensor] = None,
-    raw_samples: Optional[int] = 8192,
-    num_restarts: int = 8,
+    raw_samples: Optional[int] = 4096,
+    num_restarts: int = 12,
     maximize: bool = True,
     batch_limit: int = 256,
     **kwargs: Any,
@@ -903,8 +903,6 @@ def optimize_posterior_samples(
             - X_opt: A `num_optima x [batch_size] x d`-dim tensor of optimal inputs x*.
             - f_opt: A `num_optima x [batch_size] x 1`-dim tensor of optimal outputs f*.
     """
-    #paths.paths.prior_paths.weight = paths.paths.prior_paths.weight.float()
-    #paths.paths.update_paths.weight = paths.paths.update_paths.weight.float()
     if maximize:
         def path_func(x):
             return paths.forward(x)
@@ -915,8 +913,7 @@ def optimize_posterior_samples(
 
     candidate_set = unnormalize(
         SobolEngine(dimension=bounds.shape[1], scramble=True).draw(raw_samples), bounds
-    )  # .to(torch.float32)
-
+    )
     # queries all samples on all candidates - output shape
     # raw_samples * num_optima * num_models
     # batch_limit = kwargs.get('batch_limit', len(candidate_set))

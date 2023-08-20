@@ -121,6 +121,7 @@ from botorch.acquisition.active_learning import (
     QBMGP,
     BQBC,
     BALM,
+    BALD
 )
 from torch import Tensor
 
@@ -1127,6 +1128,20 @@ def construct_inputs_QBMGP(
 
 @acqf_input_constructor(BQBC)
 def construct_inputs_BQBC(
+    model: Model,
+    training_data: MaybeDict[SupervisedDataset],
+    bounds: Tensor,
+    **kwargs: Any
+):
+    inputs = {
+        'model': model,
+        **kwargs
+    }
+    return inputs
+
+
+@acqf_input_constructor(BALD)
+def construct_inputs_BALD(
     model: Model,
     training_data: MaybeDict[SupervisedDataset],
     bounds: Tensor,
