@@ -21,6 +21,7 @@ from benchmarking.synthetic import (
     AdditiveEmbedded
 )
 from benchmarking.lassobench_task import LassoRealFunction
+from benchmarking.pd1_task import PD1Function
 from benchmarking.cosmo_task import CosmoFunction
 from botorch.acquisition import (
     qMaxValueEntropy,
@@ -28,10 +29,13 @@ from botorch.acquisition import (
     qExpectedImprovement,
     qNoisyExpectedImprovement,
     qProbabilityOfImprovement,
-    qUpperConfidenceBound
+    qUpperConfidenceBound,
 )
 from botorch.acquisition.max_value_entropy_search import (
     qLowerBoundMaxValueEntropy,
+)
+from botorch.acquisition.predictive_entropy_search import (
+    qPredictiveEntropySearch
 )
 from botorch.acquisition.joint_entropy_search import (
     qJointEntropySearch,
@@ -50,13 +54,15 @@ from ax.models.torch.fully_bayesian import (
     single_task_pyro_model,
 )
 from botorch.models.fully_bayesian import (
+    WarpingPyroModel,
     SaasPyroModel,
     SingleTaskMeanPyroModel,
     ActiveLearningPyroModel,
     ActiveLearningWithoutMeanPyroModel,
     ActiveLearningWithOutputscalePyroModel,
+    FixedAdditiveSamplingModel,
     SaasFullyBayesianSingleTaskGP,
-    FixedAdditiveSamplingModel
+    WarpingFullyBayesianSingleTaskGP,
 )
 from ax.models.torch.fully_bayesian_model_utils import (
     _get_active_learning_gpytorch_model,
@@ -90,6 +96,10 @@ def get_test_function(name: str, noise_std: float = 0, seed: int = 0):
         'gp_2dim': GPTestFunction,
         'gp_2_2_2dim': AdditiveEmbedded,
         'gp_2_2_2_2_2dim': AdditiveEmbedded,
+        'pd1_wmt': PD1Function,
+        'pd1_lm1b': PD1Function,
+        'pd1_cifar': PD1Function,
+        
     }
 
     test_function = TEST_FUNCTIONS[name]
@@ -110,6 +120,9 @@ def get_test_function(name: str, noise_std: float = 0, seed: int = 0):
         'hartmann4': dict(dim=4),
         'hartmann6': dict(dim=6),
         'ackley4': dict(dim=4),
+        'pd1_wmt': dict(negate=False, seed=seed, task_name='translatewmt_xformer_64'),
+        'pd1_lm1b': dict(negate=False, seed=seed, task_name='lm1b_transformer_2048'),
+        'pd1_cifar': dict(negate=False, seed=seed, task_name='cifar100_wideresnet_2048'),
     }
 
     default_args.update(extra_args.get(name, {}))
@@ -144,10 +157,15 @@ ACQUISITION_FUNCTIONS = {
     'JES-e': qExploitJointEntropySearch,
     'GIBBON': qLowerBoundMaxValueEntropy,
     'ScoreBO_J': JointSelfCorrecting,
+    'PES': qPredictiveEntropySearch,
     'SAL': StatisticalDistance,
+    'BALM': BALM,
     'QBMGP': QBMGP,
     'BALM': BALM,
     'BQBC': BQBC,
+    
+    
+
 }
 
 MODELS = {
@@ -169,6 +187,8 @@ GP_PRIORS = {
         pyro_model=ActiveLearningPyroModel()),
     'ScoreBO_add': dict(
         pyro_model=FixedAdditiveSamplingModel()),
+    'ScoreBO_warp': dict(
+        pyro_model=WarpingPyroModel()),
 }
 
 MODEL_CLASSES = {
@@ -178,6 +198,7 @@ MODEL_CLASSES = {
     'ScoreBO_add': SaasFullyBayesianSingleTaskGP,
     'ScoreBO_saas': SaasFullyBayesianSingleTaskGP,
     'SCoreBO_al_op': SaasFullyBayesianSingleTaskGP,
+    'ScoreBO_warp': WarpingFullyBayesianSingleTaskGP,
 
 }
 

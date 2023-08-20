@@ -197,9 +197,7 @@ def is_fully_bayesian(model: Model) -> bool:
     from botorch.models import ModelList, ModelListGP
     from botorch.models.fully_bayesian import (
         SaasFullyBayesianSingleTaskGP,
-        PyroFullyBayesianSingleTaskGP,
         WarpingFullyBayesianSingleTaskGP,
-        SliceFullyBayesianSingleTaskGP
     )
     from botorch.models.fully_bayesian_multitask import SaasFullyBayesianMultiTaskGP
 
@@ -207,9 +205,7 @@ def is_fully_bayesian(model: Model) -> bool:
     full_bayesian_model_cls = [
         SaasFullyBayesianSingleTaskGP,
         SaasFullyBayesianMultiTaskGP,
-        PyroFullyBayesianSingleTaskGP,
         WarpingFullyBayesianSingleTaskGP,
-        SliceFullyBayesianSingleTaskGP
     ]
 
     if any(

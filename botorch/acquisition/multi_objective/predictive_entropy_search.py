@@ -31,6 +31,7 @@ from botorch.exceptions import InputDataError
 from botorch.exceptions.errors import UnsupportedError
 from botorch.models.model import Model
 from botorch.models.model_list_gp_regression import ModelListGP
+from botorch.models.fully_bayesian import SaasFullyBayesianSingleTaskGP, WarpingFullyBayesianSingleTaskGP
 from botorch.models.utils import check_no_nans
 from botorch.utils.transforms import concatenate_pending_points, t_batch_mode_transform
 from torch import Tensor
@@ -144,25 +145,25 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
             train_X = self.model.train_inputs[0]
 
         # Batch GP models (e.g. fantasized models) are not currently supported
-        if train_X.ndim > 2:
-            raise NotImplementedError(
-                "Batch GP models (e.g. fantasized models) are not supported."
-            )
+        # if train_X.ndim > 2:
+        #    raise NotImplementedError(
+        #        "Batch GP models (e.g. fantasized models) are not supported."
+        #    )
 
-        if pareto_sets.ndim != 3 or pareto_sets.shape[-1] != train_X.shape[-1]:
-            raise UnsupportedError(
-                "The Pareto set should have a shape of "
-                "`num_pareto_samples x num_pareto_points x input_dim`."
-            )
-        else:
-            self.pareto_sets = pareto_sets
-
+        # if pareto_sets.ndim != 3 or pareto_sets.shape[-1] != train_X.shape[-1]:
+        #    raise UnsupportedError(
+        #        "The Pareto set should have a shape of "
+        #        "`num_pareto_samples x num_pareto_points x input_dim`."
+        #    )
+        # else:
+        self.pareto_sets = pareto_sets
         # add the pareto set to the existing training data
-        self.num_pareto_samples = pareto_sets.shape[0]
+        self.num_pareto_samples = pareto_sets.shape[0:-2]
+        repeat_shape = (self.num_pareto_samples[0], ) + \
+            tuple(1 for dim in range(train_X.ndim))
 
         self.augmented_X = torch.cat(
-            [train_X.repeat(self.num_pareto_samples, 1, 1), self.pareto_sets], dim=-2
-        )
+            [train_X.repeat(*repeat_shape), self.pareto_sets], dim=-2)
         self.max_ep_iterations = max_ep_iterations
         self.ep_jitter = ep_jitter
         self.test_jitter = test_jitter
@@ -188,7 +189,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
             train_X = self.model.train_inputs[0]
 
         tkwargs = {"dtype": train_X.dtype, "device": train_X.device}
-        N = len(train_X)
+        N = train_X.shape[-2]
         num_pareto_samples = self.num_pareto_samples
         P = self.pareto_sets.shape[-2]
 
@@ -224,23 +225,24 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
         # should not dominate the Pareto efficient points.
 
         # `num_pareto_samples x M x (N + P) x P x 2`
-        omega_f_nat_mean = torch.zeros((num_pareto_samples, M, N + P, P, 2), **tkwargs)
+
+        omega_f_nat_mean = torch.zeros((*num_pareto_samples, M, N + P, P, 2), **tkwargs)
         # `num_pareto_samples x M x (N + P) x P x 2 x 2`
         omega_f_nat_cov = torch.zeros(
-            (num_pareto_samples, M, N + P, P, 2, 2), **tkwargs
+            (*num_pareto_samples, M, N + P, P, 2, 2), **tkwargs
         )
-
+        
         ###########################################################################
         # EXPECTATION PROPAGATION
         ###########################################################################
-        damping = torch.ones(num_pareto_samples, M, **tkwargs)
-
+        damping = torch.ones(*num_pareto_samples, M, **tkwargs)
         iteration = 0
         while (torch.sum(damping) > 0) and (iteration < self.max_ep_iterations):
             # Compute the new natural mean and covariance
             ####################################################################
             # OBJECTIVE FUNCTION: OMEGA UPDATE
             ####################################################################
+            
             omega_f_nat_mean_new, omega_f_nat_cov_new = _safe_update_omega(
                 mean_f=mean_f,
                 cov_f=cov_f,
@@ -252,7 +254,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
                 maximize=self.maximize,
                 jitter=self.ep_jitter,
             )
-
+            
             ####################################################################
             # OBJECTIVE FUNCTION: MARGINAL UPDATE
             ####################################################################
@@ -264,6 +266,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
                 N=N,
                 P=P,
             )
+            
             ########################################################################
             # OBJECTIVE FUNCTION: DAMPING UPDATE
             ########################################################################
@@ -274,6 +277,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
                 damping_factor=damping,
                 jitter=self.ep_jitter,
             )
+
             check_no_nans(cholesky_nat_cov_f)
             ########################################################################
             # OBJECTIVE FUNCTION: DAMPED UPDATE
@@ -290,14 +294,16 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
                 new_factor=omega_f_nat_cov_new,
                 damping_factor=damping,
             )
+            
             # update the mean and covariance
             nat_mean_f = _damped_update(
                 old_factor=nat_mean_f, new_factor=nat_mean_f_new, damping_factor=damping
             )
+            
             nat_cov_f = _damped_update(
                 old_factor=nat_cov_f, new_factor=nat_cov_f_new, damping_factor=damping
             )
-
+            
             # compute cholesky inverse
             cov_f_new = torch.cholesky_inverse(cholesky_nat_cov_f)
             mean_f_new = torch.einsum("...ij,...j->...i", cov_f_new, nat_mean_f)
@@ -347,19 +353,27 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
 
         if M > 1 or isinstance(self.model, ModelListGP):
             N = len(self.model.train_inputs[0][0])
+        elif isinstance(self.model, (SaasFullyBayesianSingleTaskGP, WarpingFullyBayesianSingleTaskGP)):
+            N = len(self.model.train_inputs[0][1])
         else:
             N = len(self.model.train_inputs[0])
         P = self.pareto_sets.shape[-2]
+
         num_pareto_samples = self.num_pareto_samples
         ###########################################################################
         # AUGMENT X WITH THE SAMPLED PARETO SET
         ###########################################################################
-        new_shape = batch_shape + torch.Size([num_pareto_samples]) + X.shape[-2:]
-        expanded_X = X.unsqueeze(-3).expand(new_shape)
+        new_shape = batch_shape + torch.Size([*num_pareto_samples]) + X.shape[-2:]
+        expanded_X = X.clone()
+        for expand_idx in range(len(new_shape) - X.ndim):
+            expanded_X = expanded_X.unsqueeze(-3)
+
+        expanded_X = expanded_X.expand(new_shape)
         expanded_ps = self.pareto_sets.expand(X.shape[0:-2] + self.pareto_sets.shape)
         # `batch_shape x num_pareto_samples x (q + P) x d`
-        aug_X = torch.cat([expanded_X, expanded_ps], dim=-2)
 
+        # AUTHOR for each model - do model and optima need to change spots?
+        aug_X = torch.cat([expanded_X, expanded_ps], dim=-2)
         ###########################################################################
         # COMPUTE THE POSTERIORS AND OBSERVATION NOISE
         ###########################################################################
@@ -397,11 +411,11 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
         ###########################################################################
         # `batch_shape x num_pareto_samples x M x (q + P) x P x 2`
         omega_f_nat_mean = torch.zeros(
-            batch_shape + torch.Size([num_pareto_samples, M, q + P, P, 2]), **tkwargs
+            batch_shape + torch.Size([*num_pareto_samples, M, q + P, P, 2]), **tkwargs
         )
         # `batch_shape x num_pareto_samples x M x (q + P) x P x 2 x 2`
         omega_f_nat_cov = torch.zeros(
-            batch_shape + torch.Size([num_pareto_samples, M, q + P, P, 2, 2]), **tkwargs
+            batch_shape + torch.Size([*num_pareto_samples, M, q + P, P, 2, 2]), **tkwargs
         )
         ###########################################################################
         # RUN EP ONCE
@@ -421,6 +435,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
         ###########################################################################
         # ADD THE CACHE FACTORS BACK
         ###########################################################################
+        
         omega_f_nat_mean, omega_f_nat_cov = _augment_factors_with_cached_factors(
             q=q,
             N=N,
@@ -432,6 +447,7 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
         ###########################################################################
         # COMPUTE THE MARGINAL
         ###########################################################################
+        
         nat_mean_f, nat_cov_f = _update_marginals(
             pred_f_nat_mean=pred_f_nat_mean,
             pred_f_nat_cov=pred_f_nat_cov,
@@ -445,15 +461,15 @@ class qMultiObjectivePredictiveEntropySearch(AcquisitionFunction):
         ###########################################################################
         # # update damping of objectives
         damping = torch.ones(
-            batch_shape + torch.Size([num_pareto_samples, M]), **tkwargs
+            batch_shape + torch.Size([*num_pareto_samples, M]), **tkwargs
         )
+        
         damping, cholesky_nat_cov_f_new = _update_damping(
             nat_cov=pred_f_nat_cov,
             nat_cov_new=nat_cov_f,
             damping_factor=damping,
             jitter=self.test_jitter,
         )
-
         # invert matrix
         cov_f_new = torch.cholesky_inverse(cholesky_nat_cov_f_new)
         check_no_nans(cov_f_new)
@@ -547,10 +563,15 @@ def _initialize_predictive_matrices(
     """
     tkwargs = {"dtype": X.dtype, "device": X.device}
     # compute the predictive mean and covariances at X
-    posterior = model.posterior(X, observation_noise=observation_noise)
+    if isinstance(model, (SaasFullyBayesianSingleTaskGP, WarpingFullyBayesianSingleTaskGP)):
+        posterior = model.posterior(
+            X, observation_noise=observation_noise, predict_per_model=True)
+    else:
+        posterior = model.posterior(X, observation_noise=observation_noise)
 
-    # `batch_shape x (R * num_outputs) x (R * num_outputs)`
+    pred_mean = posterior.mean.swapaxes(-2, -1)
     init_pred_cov = posterior.mvn.covariance_matrix
+
     num_outputs = model.num_outputs
     R = int(init_pred_cov.shape[-1] / num_outputs)
     pred_cov = [
@@ -566,7 +587,6 @@ def _initialize_predictive_matrices(
     pred_cov = pred_cov + jitter * identity
 
     # `batch_shape x num_outputs x R`
-    pred_mean = posterior.mean.swapaxes(-2, -1)
 
     #############################################################
     if natural:
@@ -995,7 +1015,7 @@ def _damped_update(
     for _ in range(len(fs[len(bs) :])):
         df = df.unsqueeze(-1)
 
-    return df * new_factor + (1 - df) * old_factor
+    return (df * new_factor + (1 - df) * old_factor).detach()
 
 
 def _update_damping(
@@ -1096,7 +1116,7 @@ def _update_damping_when_converged(
     delta_cov = cov_new - cov_old
     am = torch.amax(abs(mean_old), dim=-1)
     ac = torch.amax(abs(cov_old), dim=(-2, -1))
-
+    
     if iteration > 2:
         mask_mean = torch.amax(abs(delta_mean), dim=-1) < threshold * am
         mask_cov = torch.amax(abs(delta_cov), dim=(-2, -1)) < threshold * ac

@@ -28,6 +28,7 @@ from botorch.acquisition.knowledge_gradient import (
 from botorch.acquisition.joint_entropy_search import qJointEntropySearch
 
 from botorch.acquisition.active_learning import JointSelfCorrecting
+from botorch.acquisition.predictive_entropy_search import qPredictiveEntropySearch
 from botorch.acquisition.joint_entropy_search import qJointEntropySearch
 from botorch.acquisition.utils import is_nonnegative
 from botorch.exceptions.errors import BotorchTensorDimensionError, UnsupportedError
@@ -1132,8 +1133,8 @@ def sample_perturbed_subset_dims(
 
 
 def get_suggestions(acq_function: AcquisitionFunction) -> Optional[Tensor]:
-    if isinstance(acq_function, (qJointEntropySearch, JointSelfCorrecting)):
-        num_optima = acq_function.optimal_outputs.numel()
+    if isinstance(acq_function, (qJointEntropySearch, JointSelfCorrecting, qPredictiveEntropySearch)):
+        num_optima = acq_function.optimal_inputs.shape[:-1].numel()
         suggestions = acq_function.optimal_inputs.reshape(num_optima, -1)
         return suggestions
 

@@ -218,6 +218,26 @@ class BALM(AcquisitionFunction):
         return posterior.variance.mean(dim=MCMC_DIM).squeeze(-1)
 
 
+class BALD(AcquisitionFunction):
+    def __init__(
+        self,
+        model: Model,
+        **kwargs: Any
+    ) -> None:
+
+        super().__init__(model)
+
+    @t_batch_mode_transform()
+    def forward(self, X: Tensor) -> Tensor:
+        posterior = self.model.posterior(X, observation_noise=True)
+        marg_variance = posterior.mixture_variance.unsqueeze(-1)
+        cond_variances = posterior.variance
+        bald = torch.log(marg_variance) - \
+            torch.log(cond_variances)
+
+        return bald.squeeze(-1).squeeze(-1)
+
+
 class QBMGP(AcquisitionFunction):
     def __init__(
         self,
@@ -288,6 +308,15 @@ class StatisticalDistance(AcquisitionFunction):
             self.base_samples = torch.distributions.Normal(
                 loc=0, scale=1).icdf(samples).squeeze(-1)
 
+        #apperX_plot = torch.linspace(0, 1, 201).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        #acq = self._compute(X_plot, mean_only=True)
+        #acq_rev = self._compute(X_plot, var_only=True)
+
+        #batch_model = model.models[0]
+        #from botorch.utils.plot_acq import plot_acq_and_gp
+        #plot_acq_and_gp(batch_model, X_plot, acq, acq_rev, (acq + acq_rev).mean(MCMC_DIM))
+    # pretty much only used for plotting
+
     def _compute(self, X: Tensor, mean_only: bool = False, var_only: bool = False) -> Tensor:
         posterior = self.model.posterior(X, observation_noise=self.noisy_distance)
 
@@ -320,8 +349,302 @@ class StatisticalDistance(AcquisitionFunction):
             elif self.distance_metric == 'WS':
                 dist_al = _compute_wasserstein_distance_mc(
                     cond_means, cond_variances, cond_means, cond_variances, self.base_samples)
+        return dist_al.squeeze(-1).mean(-1).squeeze(1)
+
+
+class qAdaptiveStatisticalDistance(AcquisitionFunction):
+    """Statistical distance-based Bayesian Active Learning
+
+    Args:
+        AcquisitionFunction ([type]): [description]
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        noisy_distance: bool = True,
+        distance_metric: str = 'HR',
+        estimate: str = 'MM',
+        num_samples: int = 256,
+        **kwargs: Any
+    ) -> None:
+
+        super().__init__(model)
+        self.noisy_distance = noisy_distance
+        available_dists = ['JS', 'KL', 'WS', 'BC', 'HR']
+        if distance_metric not in available_dists:
+            raise ValueError(f'Distance metric {distance_metric}'
+                             f'Not available. Choose any of {available_dists}')
+        self.distance = DISTANCE_METRICS[distance_metric]
+        self.estimate = estimate
+        self.distance_metric = distance_metric
+        if estimate == 'MC':
+            sobol = SobolEngine(dimension=1, scramble=True)
+            samples = sobol.draw(num_samples)
+            self.base_samples = torch.distributions.Normal(
+                loc=0, scale=1).icdf(samples).squeeze(-1)
+
+        hp_samples = _approximate_sample_posterior(model=model, num_samples=5)
+        self.sampled_model = samples_to_state_dict(hp_samples, model)
+
+    @t_batch_mode_transform()
+    def forward(self, X: Tensor) -> Tensor:
+        posterior = self.model.posterior(X.unsqueeze(
+            MCMC_DIM), observation_noise=self.noisy_distance)
+        cond_means = posterior.mean
+        marg_mean = cond_means.mean(MCMC_DIM, keepdim=True)
+        cond_variances = posterior.variance
+        marg_variance = cond_variances.mean(MCMC_DIM, keepdim=True)
+        if self.estimate == 'MM':
+            dist_al = self.distance(cond_means, marg_mean,
+                                    cond_variances, marg_variance)
+        else:
+            if self.distance_metric == 'HR':
+                dist_al = _compute_hellinger_distance_mc(
+                    contorchd_means, cond_variances, cond_means, cond_variances, self.base_samples)
+
+            elif self.distance_metric == 'WS':
+                dist_al = _compute_wasserstein_distance_mc(
+                    cond_means, cond_variances, cond_means, cond_variances, self.base_samples)
 
         return dist_al.squeeze(-1).mean(-1).squeeze(1)
+
+
+def _approximate_sample_posterior(model: Model, num_samples: int):
+    from gpytorch.mlls import ExactMarginalLogLikelihood
+    from botorch.fit import fit_gpytorch_mll_scipy
+
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    output = model(model.train_inputs[0])
+    # Calc loss and backprop gradients
+    loss = -mll(output, model.train_targets.flatten())
+
+    # TODO this is where the appropriate parameters should be logged
+    # We're backpropping through the raw parameter values, which should be
+    # exactly what we want to do in this case
+    # TODO remember to check
+    param_mean = torch.cat([g.flatten() for g in model.parameters()])
+    grad = torch.autograd.grad(loss, model.parameters(), create_graph=True)
+    grads = torch.cat([g.flatten() for g in grad])
+    hess = torch.zeros((len(grads), len(grads))).to(model.train_targets)
+    for idx, grad in enumerate(grads):
+        param_gradtwo = torch.autograd.grad(grad, model.parameters(), retain_graph=True)
+        hess[:, idx] = torch.cat([g.flatten() for g in param_gradtwo])
+
+    # TODO this cannot possibly be right
+    hess[0, 0] = -hess[0, 0]
+    #hess_inv = torch.linalg.inv(hess)
+
+    dist = torch.distributions.MultivariateNormal(param_mean, precision_matrix=hess)
+    samples = dist.rsample(torch.Size([num_samples]))
+    return samples
+
+
+def samples_to_state_dict(samples: Tensor, model: Model):
+    # TODO fix something more reasonable instead of just picking out the indices    Z
+    named_params = model.named_parameters()
+    state_replacements = {}
+    samples_ctr = []
+    output_shape = (len(samples), )
+    samples_counter = 0
+    for param in named_params:
+        end_of_samples = samples_counter + param[1].numel()
+        name = param[0]
+        per_hp_samples = samples[:, samples_counter:end_of_samples]
+        sample_output_shape = output_shape + param[1].shape
+        state_replacements[name] = per_hp_samples.view(sample_output_shape)
+        samples_counter = end_of_samples
+
+    state_dict = model.state_dict()
+    for state, val in state_replacements.items():
+        state_dict[state] = val
+
+    new_model = deepcopy(model)
+    new_model.covar_module.raw_outputscale = torch.nn.Parameter(
+        state_dict['covar_module.raw_outputscale'])
+    new_model.covar_module.base_kernel.raw_lengthscale = torch.nn.Parameter(
+        state_dict['covar_module.base_kernel.raw_lengthscale'])
+    new_model.likelihood.noise_covar.raw_noise = torch.nn.Parameter(
+        state_dict['likelihood.noise_covar.raw_noise'])
+    new_model.mean_module.raw_constant = torch.nn.Parameter(
+        state_dict['mean_module.raw_constant'])
+
+    return new_model
+
+
+class MaxValueSelfCorrecting(AcquisitionFunction):
+    """Wasserstein-metric based Bayesian Active Learning
+
+    Args:
+        AcquisitionFunction ([type]): [description]
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        optimal_inputs: Tensor,
+        optimal_outputs: Tensor,
+        paths,
+        posterior_transform: Optional[PosteriorTransform] = None,
+        noisy_distance: bool = True,
+        split_coefficient: float = -1.0,
+        distance_metric: str = 'WS',
+        estimate: str = 'MM',
+        **kwargs: Any
+    ) -> None:
+        super().__init__(model)
+        self.noisy_distance = noisy_distance
+        self.optimal_outputs = optimal_outputs.unsqueeze(-2)
+        self.posterior_transform = posterior_transform
+        self.num_samples = len(optimal_outputs)
+        self.num_models = self.optimal_outputs.shape[1]
+        self.split_coefficient = split_coefficient
+        self.estimate = estimate
+        if distance_metric not in DISTANCE_METRICS.keys():
+            raise ValueError(f'Distance metric {distance_metric}'
+                             f'Not available. Choose any of {available_dists}')
+        self.distance = DISTANCE_METRICS[distance_metric]
+
+        # pretty much only used for plotting
+        self.noisy_distance = noisy_distance
+        PLOT = False
+        if PLOT:
+            from botorch.utils.plot_acq import (
+                plot_acq_and_gp_with_values,
+                plot_acq_and_gp_with_values_paper
+            )
+            X_plot = torch.linspace(0, 1, 201).unsqueeze(-1).unsqueeze(-1)
+            mean_truncated, marg_mean, cond_means, var_truncated, marg_variance, cond_variances, al_acq, bo_acq = \
+                self._compute(X_plot)
+
+            plot_acq_and_gp_with_values_paper(
+                self.model,
+                X_plot,
+                mean_truncated,
+                marg_mean,
+                cond_means,
+                var_truncated,
+                marg_variance,
+                cond_variances,
+                al_acq,
+                bo_acq,
+                self.model.train_inputs[0][0],
+                self.model.train_targets[0],
+                self.optimal_inputs.transpose(1, 0),
+                self.optimal_outputs.transpose(1, 0),
+                paths=paths,
+                cond_type='M'
+            )
+            plot_acq_and_gp_with_values_paper(
+                self.model,
+                X_plot,
+                mean_truncated,
+                marg_mean,
+                cond_means,
+                var_truncated,
+                marg_variance,
+                cond_variances,
+                al_acq,
+                bo_acq,
+                self.model.train_inputs[0][0],
+                self.model.train_targets[0],
+                self.optimal_inputs.transpose(1, 0),
+                self.optimal_outputs.transpose(1, 0),
+                paths=paths,
+                cond_type='W'
+            )
+
+    def _compute(self, X: Tensor, mean_only: bool = False, var_only: bool = False) -> Tensor:
+        prev_m = self.model.posterior(
+            X.unsqueeze(MCMC_DIM), observation_noise=self.noisy_distance)
+        noiseless_var = self.model.posterior(
+            X.unsqueeze(MCMC_DIM), observation_noise=False).variance
+
+        mean_m = prev_m.mean
+        variance_m = prev_m.variance.clamp_min(CLAMP_LB)
+
+        check_no_nans(variance_m)
+        # get stdv of noiseless variance
+        stdv = noiseless_var.sqrt()
+        # batch_shape x 1
+        normal = torch.distributions.Normal(
+            torch.zeros(1, device=X.device, dtype=X.dtype),
+            torch.ones(1, device=X.device, dtype=X.dtype),
+        )
+
+        # prepare max value quantities required by ScoreBO
+        normalized_mvs = (self.optimal_outputs - mean_m) / stdv
+        cdf_mvs = normal.cdf(normalized_mvs).clamp_min(CLAMP_LB)
+        pdf_mvs = torch.exp(normal.log_prob(normalized_mvs))
+
+        mean_truncated = mean_m - stdv * pdf_mvs / cdf_mvs
+        # This is the noiseless variance (i.e. the part that gets truncated)
+        var_truncated = noiseless_var * \
+            (1 - normalized_mvs * pdf_mvs / cdf_mvs - torch.pow(pdf_mvs / cdf_mvs, 2))
+
+        var_truncated = var_truncated + (variance_m - noiseless_var)
+        # The last dim is the num_samples dim
+        marg_truncated_mean = mean_truncated.mean(
+            MCMC_DIM, keepdim=True).mean(SAMPLES_DIM, keepdim=True)
+        marg_truncated_var = var_truncated.mean(
+            MCMC_DIM, keepdim=True).mean(SAMPLES_DIM, keepdim=True)
+
+        if self.split_coefficient < 0:
+            dist = self.distance(mean_truncated, marg_truncated_mean,
+                                 var_truncated, marg_truncated_var)
+
+        else:
+            dist_bo = self.distance(
+                mean_truncated, marg_truncated_mean, var_truncated, marg_truncated_var)
+            dist_al = self.distance(mean_truncated, prev_m.mean,
+                                    var_truncated, prev_m.variance)
+            dist = dist_bo * dist_al
+
+        return mean_truncated, marg_mean, prev_m.mean, var_truncated, marg_variance, prev_m.variance, dist_bo, dist_al
+
+    @t_batch_mode_transform()
+    def forward(self, X: Tensor) -> Tensor:
+        posterior_m = self.model.posterior(
+            X.unsqueeze(MCMC_DIM), observation_noise=self.noisy_distance)
+        noiseless_var = self.model.posterior(
+            X.unsqueeze(MCMC_DIM), observation_noise=False).variance
+
+        mean_m = posterior_m.mean
+        variance_m = posterior_m.variance.clamp_min(CLAMP_LB)
+
+        check_no_nans(variance_m)
+        # get stdv of noiseless variance
+        stdv = noiseless_var.sqrt()
+        # batch_shape x 1
+        normal = torch.distributions.Normal(
+            torch.zeros(1, device=X.device, dtype=X.dtype),
+            torch.ones(1, device=X.device, dtype=X.dtype),
+        )
+        # prepare max value quantities required by ScoreBO
+        normalized_mvs = (self.optimal_outputs - mean_m) / stdv
+        cdf_mvs = normal.cdf(normalized_mvs).clamp_min(CLAMP_LB)
+        pdf_mvs = torch.exp(normal.log_prob(normalized_mvs))
+
+        mean_truncated = mean_m - stdv * pdf_mvs / cdf_mvs
+        # This is the noiseless variance (i.e. the part that gets truncated)
+        var_truncated = noiseless_var * \
+            (1 - normalized_mvs * pdf_mvs / cdf_mvs - torch.pow(pdf_mvs / cdf_mvs, 2))
+        var_truncated = var_truncated + (variance_m - noiseless_var)
+
+        if self.marginalize_truncated:
+            reference_mean = mean_truncated
+            reference_var = var_truncated
+        else:
+            reference_mean = posterior_m.mean
+            reference_var = posterior_m.variance
+        if self.estimate == 'MM':
+            dist = _compute_disagreement_mm(
+                mean_truncated, var_truncated, reference_mean, reference_var, self.distance)
+        elif self.estimate == 'MC':
+            dist = _compute_hellinger_distance_mc(
+                mean_truncated, var_truncated, reference_mean, reference_var, self.base_samples)
+
+        return dist.mean(SAMPLES_DIM).squeeze(-1).squeeze(-1)
 
 
 class JointSelfCorrecting(AcquisitionFunction):
@@ -339,20 +662,20 @@ class JointSelfCorrecting(AcquisitionFunction):
         optimal_outputs: Tensor,
         posterior_transform: Optional[PosteriorTransform] = None,
         noisy_distance: bool = True,
-        condition_noiseless: bool = True,
+        paths=None,
         distance_metric: str = 'HR',
         estimate: str = 'MM',
         num_samples: int = 256,
+        marginalize_truncated: bool = False,
         **kwargs: Any
     ) -> None:
         super().__init__(model)
-        self.condition_noiseless = condition_noiseless
         self.initial_model = model
         self.posterior_transform = posterior_transform
         self.noisy_distance = noisy_distance
         self.num_models = optimal_inputs.shape[1]
         self.estimate = estimate
-        available_dists = ['WS','HR']
+        available_dists = ['IG', 'JS', 'KL', 'WS', 'BC', 'HR', 'Mean', 'HRSQ']
         if distance_metric not in available_dists:
             raise ValueError(f'Distance metric {distance_metric}'
                              f'Not available. Choose any of {available_dists}')
@@ -369,8 +692,9 @@ class JointSelfCorrecting(AcquisitionFunction):
         self.optimal_outputs = optimal_outputs.unsqueeze(-2)
         self.posterior_transform = posterior_transform
         self.initial_model = model
+        self.marginalize_truncated = marginalize_truncated
         self.distance_metric = distance_metric
-    
+
         with fantasize_flag():
             with settings.propagate_grads(False):
                 post_ps = self.initial_model.posterior(
@@ -389,6 +713,157 @@ class JointSelfCorrecting(AcquisitionFunction):
                     noise=CLAMP_LB
                     * torch.ones_like(self.optimal_outputs)
                 )
+
+        #self.noisy_distance = noisy_distance
+        PLOT = kwargs.get('plot', False)
+        if PLOT:
+
+            from botorch.utils.plot_acq import (
+                plot_acq_and_gp_with_values,
+                plot_acq_and_gp_with_values_paper
+            )
+            from botorch.utils.plot_acq import (
+                plot_acq_and_gp_with_values,
+                plot_acq_and_gp_with_values_paper
+            )
+            if self.model._original_train_inputs is None:
+                train_inputs = self.model.train_inputs[0][0]
+            else:
+                train_inputs = self.model._original_train_inputs[0]
+
+            X_plot = torch.linspace(0, 1, 201).unsqueeze(-1).unsqueeze(-1)
+            mean_truncated, posterior_mean, var_truncated, posterior_variance, bo_acq, al_acq, dist_mc = \
+                self._compute(X_plot)
+
+            # Not even plotting acq in this one
+            plot_acq_and_gp_with_values_paper(
+                self.model,
+                X_plot,
+                mean_truncated,
+                posterior_mean,
+                var_truncated,
+                posterior_variance,
+                bo_acq,
+                al_acq,
+                train_inputs,
+                self.model.train_targets[0],
+                self.optimal_inputs,
+                self.optimal_outputs,
+                paths=paths,
+                cond_type='W',
+                dist_mc=None,
+                plot_only_gp=True,
+                plot_sample=False
+            )
+
+            plot_acq_and_gp_with_values_paper(
+                self.model,
+                X_plot,
+                mean_truncated,
+                posterior_mean,
+                var_truncated,
+                posterior_variance,
+                bo_acq,
+                al_acq,
+                train_inputs,
+                self.model.train_targets[0],
+                self.optimal_inputs,
+                self.optimal_outputs,
+                paths=paths,
+                cond_type='J',
+                dist_mc=None
+            )
+
+            plot_acq_and_gp_with_values_paper(
+                self.model,
+                X_plot,
+                mean_truncated,
+                posterior_mean,
+                var_truncated,
+                posterior_variance,
+                bo_acq,
+                al_acq,
+                train_inputs,
+                self.model.train_targets[0],
+                self.optimal_inputs,
+                self.optimal_outputs,
+                paths=paths,
+                cond_type='W'
+            )
+
+            plot_acq_and_gp_with_values_paper(
+                self.model,
+                X_plot,
+                mean_truncated,
+                posterior_mean,
+                var_truncated,
+                posterior_variance,
+                bo_acq,
+                al_acq,
+                train_inputs,
+                self.model.train_targets[0],
+                self.optimal_inputs,
+                self.optimal_outputs,
+                paths=paths,
+                cond_type='W',
+                plot_sample=False
+            )
+
+    # pretty much only used for plotting
+
+    def _compute(self, X: Tensor, mean_only: bool = False, var_only: bool = False) -> Tensor:
+        prev_m = self.initial_model.posterior(
+            X.unsqueeze(MCMC_DIM), observation_noise=self.noisy_distance)
+        # Compute the mixture mean and variance
+        posterior_m = self.conditional_model.posterior(
+            X.unsqueeze(MCMC_DIM), observation_noise=self.noisy_distance)
+        noiseless_var = self.conditional_model.posterior(
+            X.unsqueeze(MCMC_DIM), observation_noise=False
+        ).variance
+
+        mean_m = posterior_m.mean
+        variance_m = posterior_m.variance.clamp_min(CLAMP_LB)
+
+        check_no_nans(variance_m)
+        # get stdv of noiseless variance
+        stdv = noiseless_var.sqrt()
+        # batch_shape x 1
+        normal = torch.distributions.Normal(
+            torch.zeros(1, device=X.device, dtype=X.dtype),
+            torch.ones(1, device=X.device, dtype=X.dtype),
+        )
+
+        # prepare max value quantities required by ScoreBO
+        normalized_mvs = (self.optimal_outputs - mean_m) / stdv
+        cdf_mvs = normal.cdf(normalized_mvs).clamp_min(CLAMP_LB)
+        pdf_mvs = torch.exp(normal.log_prob(normalized_mvs))
+
+        mean_truncated = mean_m - stdv * pdf_mvs / cdf_mvs
+        # This is the noiseless variance (i.e. the part that gets truncated)
+        var_truncated = noiseless_var * \
+            (1 - normalized_mvs * pdf_mvs / cdf_mvs - torch.pow(pdf_mvs / cdf_mvs, 2))
+        var_truncated = var_truncated + (variance_m - noiseless_var)
+
+        if self.marginalize_truncated:
+            reference_mean = mean_truncated
+            reference_var = var_truncated
+        else:
+            prev_m = self.initial_model.posterior(
+                X.unsqueeze(MCMC_DIM), observation_noise=self.noisy_distance)
+            reference_mean = prev_m.mean
+            reference_var = prev_m.variance
+
+        if self.estimate == 'MM':
+            dist_al = _compute_disagreement_mm(
+                reference_mean, reference_var, reference_mean, reference_var, self.distance)
+            dist_mc = _compute_disagreement_mm(
+                mean_truncated, var_truncated, reference_mean, reference_var, self.distance)
+
+        else:
+            dist_mc = _compute_hellinger_distance_mc(
+                mean_truncated, var_truncated, reference_mean, reference_var, self.base_samples)
+
+        return posterior_m.mean, prev_m.mean, posterior_m.variance, prev_m.variance, dist_mc, dist_al, dist_mc
 
     @t_batch_mode_transform()
     def forward(self, X: Tensor) -> Tensor:
@@ -421,11 +896,15 @@ class JointSelfCorrecting(AcquisitionFunction):
             (1 - normalized_mvs * pdf_mvs / cdf_mvs - torch.pow(pdf_mvs / cdf_mvs, 2))
         var_truncated = var_truncated + (variance_m - noiseless_var)
 
-        prev_m = self.initial_model.posterior(
-            X.unsqueeze(MCMC_DIM), observation_noise=self.noisy_distance)
-        reference_mean = prev_m.mean
-        reference_var = prev_m.variance
-        
+        if self.marginalize_truncated:
+            reference_mean = mean_truncated
+            reference_var = var_truncated
+        else:
+            prev_m = self.initial_model.posterior(
+                X.unsqueeze(MCMC_DIM), observation_noise=self.noisy_distance)
+            reference_mean = prev_m.mean
+            reference_var = prev_m.variance
+
         if self.estimate == 'MM':
             dist = _compute_disagreement_mm(
                 mean_truncated, var_truncated, reference_mean, reference_var, self.distance)
@@ -556,6 +1035,45 @@ def _compute_hellinger_distance_mc_mix(mean_truncated, var_truncated, base_norma
     return mc_dist
 
 
+def plot_points(X, conditional_mean_samples):
+    argsorted = torch.argsort(X, dim=0).flatten()
+    sort_X = X[argsorted].detach().numpy()
+    sort_samples = conditional_mean_samples[argsorted].detach().numpy()
+    plotsize = conditional_mean_samples.shape[1:3]
+    fig, ax = plt.subplots(*plotsize, figsize=(16, 9))
+    for row, ax_row in enumerate(ax):
+        for col, ax_col in enumerate(ax_row):
+            ax_col.scatter(
+                np.tile(sort_X, sort_samples.shape[-1]).flatten(), sort_samples[:, row, col].flatten())
+    plt.show()
+
+
+class Dummy(AcquisitionFunction):
+    """Wasserstein-metric based Bayesian Active Learning
+
+    Args:
+        AcquisitionFunction ([type]): [description]
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        **kwargs: Any
+    ) -> None:
+
+        super().__init__(model)
+
+    @t_batch_mode_transform()
+    def forward(self, X: Tensor) -> Tensor:
+        return (X.sum(axis=-1)).flatten().unsqueeze(-1)
+
+
+def bqbc_distance(mean_x, mean_y, var_x, var_y):
+    mean_term = torch.pow(mean_x - mean_y, 2)
+    # rounding errors sometimes occur, where the var term is ~-1e-16
+    return mean_term.sqrt()
+
+
 def wasserstein_distance_mm(mean_x, mean_y, var_x, var_y):
     mean_term = torch.pow(mean_x - mean_y, 2)
     # rounding errors sometimes occur, where the var term is ~-1e-16
@@ -571,7 +1089,15 @@ def wasserstein_distance(mean_x, mean_y, var_x, var_y):
     # rounding errors sometimes occur, where the var term is ~-1e-16
     var_term = (var_x + var_y - 2 * torch.sqrt(var_x * var_y)).clamp_min(0)
 
+    # TODO check why I'm doing the square root here
     return torch.sqrt((mean_term + var_term).mean(dim=[-2, -1], keepdim=True))
+
+
+def bhattacharya_distance(mean_x, mean_y, var_x, var_y):
+    mean_term = 0.25 * torch.pow(mean_x - mean_y, 2) / (var_x + var_y)
+    var_term = 0.5 * torch.log((var_x + var_y) / (2 * torch.sqrt(var_x * var_y)))
+    return mean_term + var_term
+
 
 def hellinger_distance(mean_x, mean_y, var_x, var_y):
     exp_term = -0.25 * torch.pow(mean_x - mean_y, 2) / (var_x + var_y)
@@ -579,8 +1105,53 @@ def hellinger_distance(mean_x, mean_y, var_x, var_y):
     return torch.sqrt(1 - mult_term * torch.exp(exp_term))
 
 
+def hellinger_distance_sq(mean_x, mean_y, var_x, var_y):
+    return torch.pow(hellinger_distance(mean_x, mean_y, var_x, var_y), 2)
+
+
+def info_gain(mean_x, mean_y, var_x, var_y):
+    return 0.5 * (torch.log(var_y) - torch.log(var_x))
+
+
+def kl_divergence(mean_x, mean_y, var_x, var_y):
+    kl_first_term = torch.log(torch.sqrt(var_y / var_x))
+    second_term_mean = 0.5 * (torch.pow(mean_x - mean_y, 2) + var_x) / var_y
+
+    kl = kl_first_term + second_term_mean - 0.5
+    return kl
+
+
+def jensen_shannon_divergence(mean_x, mean_y, var_x, var_y):
+    w_dist_mean = (mean_x + mean_y) / 2
+    w_dist_var = (var_x + var_y) / 2
+    js_first_term = torch.log(torch.sqrt(var_x / w_dist_var)) + \
+        torch.log(torch.sqrt(var_y / w_dist_var))
+    second_term_mean_x = 0.5 * (torch.pow(mean_x - w_dist_mean, 2) + var_x) / w_dist_var
+    second_term_mean_y = 0.5 * (torch.pow(mean_y - w_dist_mean, 2) + var_y) / w_dist_var
+    js = 0.5 * (js_first_term + second_term_mean_x + second_term_mean_y)
+    return js
+
+
+def extended_skew_pdf():
+    pass
+
+
+def scale_normal_samples(base_normal_samples, means, variances):
+    pass
+
+
+def evaluate_normal_pdf(samples, means, variances):
+    # create a batch of normal distributions and evaluate on them
+    pass
+
 
 DISTANCE_METRICS = {
+    'IG': info_gain,
     'WS': wasserstein_distance,
+    'BC': bhattacharya_distance,
+    'Mean': bqbc_distance,
     'HR': hellinger_distance,
+    'KL': kl_divergence,
+    'HRSQ': hellinger_distance_sq,
+    'JS': jensen_shannon_divergence,
 }

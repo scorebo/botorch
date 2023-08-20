@@ -1,0 +1,7 @@
+name: pd1_cifar
+benchmark: pd1_cifar
+num_iters: 125
+num_init: 12
+bounds: [[0, 1], [0, 1], [0, 1], [0, 1]] 
+noise_std: 0
+prior_location: [0.5, 0.5, 0.5, 0.5]

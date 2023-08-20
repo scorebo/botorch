@@ -577,7 +577,7 @@ def construct_inputs_qPES(
     model: Model,
     training_data: MaybeDict[SupervisedDataset],
     bounds: List[Tuple[float, float]],
-    num_pareto_samples: int = 100,
+    num_optima: int = 8,
     sampling_type: Optional[Literal['pareto', 'pathwise', 'exact']] = 'pathwise',
     maximize: bool = True,
     X_pending: Optional[Tensor] = None,
@@ -588,29 +588,33 @@ def construct_inputs_qPES(
     threshold: Optional[float] = 1e-2,
     phi_update: Optional[bool] = True,
     verbose: Optional[bool] = False,
+    path_dtype: str = 'float',
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    if sampling_type == 'pareto':
-        pareto_sets, pareto_fronts = sample_pareto_sets_and_fronts(
-            model=model,
-            bounds=Tensor(bounds),
-            num_pareto_samples=num_pareto_samples,
-            num_pareto_points=num_pareto_points,
-        )
-    elif sampling_type == 'pathwise':
-        paths = draw_matheron_paths(
-            model, sample_shape=torch.Size([num_pareto_samples]))
-        pareto_sets, pareto_fronts = optimize_posterior_samples(
-            paths, bounds=Tensor(bounds), candidates=model.train_inputs[0])
-    hypercell_bounds = compute_sample_box_decomposition(pareto_fronts)
 
+    if path_dtype == 'float':
+        path_dtype = torch.float32
+    if path_dtype == 'double':
+        path_dtype = torch.float64
+
+    dtype = model.train_targets.dtype
+    sample_shape = torch.Size([num_optima])
+    from copy import deepcopy
+    paths = draw_matheron_paths(
+        deepcopy(model).to(path_dtype), sample_shape=sample_shape)
+    optimal_inputs, optimal_outputs = optimize_posterior_samples(
+        paths=paths,
+        bounds=torch.as_tensor(bounds, dtype=path_dtype).T,
+    )
+    
+    optimal_inputs, optimal_outputs = optimal_inputs.to(
+        dtype), optimal_outputs.to(dtype)
     inputs = {
         'model': model,
-        'pareto_sets': pareto_sets,
+        'optimal_inputs': optimal_inputs,
         'model': model,
         'maximize': maximize,
         'X_pending': X_pending,
-        'constraint_model': constraint_model,
         'max_ep_iterations': max_ep_iterations,
         'ep_jitter': ep_jitter,
         'test_jitter': test_jitter,
@@ -620,9 +624,6 @@ def construct_inputs_qPES(
         **kwargs
     }
     return inputs
-
-    pass
-
 
 @acqf_input_constructor(qNoisyExpectedImprovement)
 def construct_inputs_qNEI(

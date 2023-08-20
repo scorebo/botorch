@@ -1,0 +1,5 @@
+name: PES
+acq_func: PES
+init_type: sobol
+acq_kwargs:
+  num_optima: 8

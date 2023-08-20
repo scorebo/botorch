@@ -87,6 +87,8 @@ class qPredictiveEntropySearch(qMultiObjectivePredictiveEntropySearch):
             test_jitter=test_jitter,
             threshold=threshold,
         )
+        self.optimal_inputs = optimal_inputs.unsqueeze(-2)
+
 
     @concatenate_pending_points
     @t_batch_mode_transform()

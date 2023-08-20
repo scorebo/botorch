@@ -1,0 +1,7 @@
+gp: Modular
+prior_name: ScoreBO_warp
+num_samples: 192
+warmup: 96
+thinning: 6
+model_kwargs:
+  Null
